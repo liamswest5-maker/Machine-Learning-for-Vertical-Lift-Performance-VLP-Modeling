@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# IDE / editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Conda
+.conda/
+
+# Trained models (too large for GitHub — Streamlit trains from CSV on first load)
+*.pkl
+
+# OS generated files
+Desktop.ini
+ehthumbs.db
+
+# Logs
+*.log
