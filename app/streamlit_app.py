@@ -222,11 +222,22 @@ def get_model():
     if os.path.exists(MODEL_PATH):
         return load_model(MODEL_PATH)
     elif os.path.exists(DATA_PATH):
-        st.info("No saved model found. Training from data...")
-        md = train_model_from_data(DATA_PATH)
-        # Save for next time
-        with open(MODEL_PATH, 'wb') as f:
-            pickle.dump(md, f)
+        st.info(
+            "🔄 **First-time setup:** The pre-trained model file (`rf_model.pkl`, ~146 MB) is too large "
+            "to store on GitHub, so it is not included in the repository. "
+            "The app is now **automatically retraining** the Random Forest from the committed "
+            "feature-engineered dataset (`modelready_features.csv`). "
+            "This takes ~1–2 minutes and only happens once per session."
+        )
+        with st.spinner("⏳ Training Random Forest model from data... please wait (~1–2 min)"):
+            md = train_model_from_data(DATA_PATH)
+        # Save for next time within the same deployment session
+        try:
+            with open(MODEL_PATH, 'wb') as f:
+                pickle.dump(md, f)
+        except Exception:
+            pass  # Read-only filesystem on cloud — fine, model stays in memory
+        st.success("✅ Model trained and ready!")
         return md
     else:
         return None
@@ -965,14 +976,16 @@ elif page == "📊 Data Analytics":
             fig, ax = plt.subplots(figsize=(7, 5))
             data_list = [analytics_df[analytics_df['Wellbore name'] == w][dist_feature].dropna().values
                          for w in wells]
-            bp = ax.boxplot(data_list, labels=[w.replace('15/9-', '') for w in wells],
-                           patch_artist=True)
+            well_labels = [w.replace('15/9-', '') for w in wells]
+            bp = ax.boxplot(data_list, patch_artist=True)
+            # Set tick labels compatibly across matplotlib versions
+            ax.set_xticks(range(1, len(well_labels) + 1))
+            ax.set_xticklabels(well_labels, rotation=15)
             for patch, color in zip(bp['boxes'], WELL_COLORS_LIST):
                 patch.set_facecolor(color)
                 patch.set_alpha(0.6)
             ax.set_ylabel(dist_feature)
             ax.set_title(f'{dist_feature} — Box Plot by Well')
-            ax.tick_params(axis='x', rotation=15)
             plt.tight_layout()
             st.pyplot(fig)
             plt.close(fig)
