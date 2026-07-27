@@ -363,124 +363,6 @@ pooled_df.to_csv(os.path.join(DATA_DIR, 'pooled_split_results.csv'), index=False
 
 
 # =============================================================================
-# STAGE 5.5 - CLASSIFICATION-STYLE METRICS (Accuracy, Precision, Recall, F1)
-# =============================================================================
-# Rationale: The model predicts a continuous ΔP (regression). However, for
-# reservoir/production engineering decisions, what matters is whether the model
-# correctly identifies the FLOW REGIME (Low / Medium / High pressure drop).
-#
-# We convert predictions to regime classes and compute real classification
-# metrics (sklearn precision_score, recall_score, f1_score, accuracy_score).
-#
-# Regime thresholds are based on the data distribution:
-#   Low    ΔP < 100 bar  → nearing depletion, low energy
-#   Medium 100 ≤ ΔP < 200 bar → normal production
-#   High   ΔP ≥ 200 bar  → high-energy / high-rate conditions
-# =============================================================================
-print("\n" + "=" * 72)
-print("  STAGE 5.5/8: Classification-style metrics (regime classification)")
-print("=" * 72)
-print("  Regime bins:  Low (<100 bar)  |  Medium (100–200 bar)  |  High (>200 bar)")
-
-from sklearn.metrics import (accuracy_score, precision_score,
-                             recall_score, f1_score, classification_report)
-
-DP_BINS   = [0, 100, 200, np.inf]
-DP_LABELS = ['Low', 'Medium', 'High']
-
-def classify_regime(y_array):
-    """Bin continuous ΔP values into Low / Medium / High regime labels."""
-    return pd.cut(y_array, bins=DP_BINS, labels=DP_LABELS, right=False).astype(str)
-
-def compute_clf_metrics(y_true_arr, y_pred_arr, strategy_name, fold_name=None):
-    """
-    Given arrays of actual and predicted ΔP (continuous), bin both into
-    regime classes and compute precision, recall, F1, and accuracy.
-    Returns a list of per-class metric dicts.
-    """
-    y_true_cls = classify_regime(y_true_arr)
-    y_pred_cls = classify_regime(y_pred_arr)
-
-    # Use macro average for the overall scores
-    acc  = accuracy_score(y_true_cls, y_pred_cls)
-    prec = precision_score(y_true_cls, y_pred_cls, average='macro',
-                           labels=DP_LABELS, zero_division=0)
-    rec  = recall_score(y_true_cls, y_pred_cls, average='macro',
-                        labels=DP_LABELS, zero_division=0)
-    f1   = f1_score(y_true_cls, y_pred_cls, average='macro',
-                    labels=DP_LABELS, zero_division=0)
-
-    # Per-class breakdown
-    rows = []
-    per_prec = precision_score(y_true_cls, y_pred_cls, average=None,
-                               labels=DP_LABELS, zero_division=0)
-    per_rec  = recall_score(y_true_cls, y_pred_cls, average=None,
-                            labels=DP_LABELS, zero_division=0)
-    per_f1   = f1_score(y_true_cls, y_pred_cls, average=None,
-                        labels=DP_LABELS, zero_division=0)
-    per_sup  = [(y_true_cls == lbl).sum() for lbl in DP_LABELS]
-
-    for i, lbl in enumerate(DP_LABELS):
-        rows.append({
-            'Strategy': strategy_name,
-            'Fold': fold_name if fold_name else 'All',
-            'Regime': lbl,
-            'Precision': round(per_prec[i], 4),
-            'Recall':    round(per_rec[i],  4),
-            'F1':        round(per_f1[i],   4),
-            'Support':   int(per_sup[i]),
-        })
-
-    # Summary row (macro averages)
-    rows.append({
-        'Strategy': strategy_name,
-        'Fold': fold_name if fold_name else 'All',
-        'Regime': 'MACRO AVG',
-        'Precision': round(prec, 4),
-        'Recall':    round(rec,  4),
-        'F1':        round(f1,   4),
-        'Support':   int(len(y_true_arr)),
-    })
-
-    return rows, acc, prec, rec, f1
-
-
-all_clf_rows = []
-
-# ── A. LOWO ──────────────────────────────────────────────────────────────────
-print("\n  A. LOWO classification metrics:")
-for well, (yt, yp, _) in lowo_preds.items():
-    rows, acc, prec, rec, f1 = compute_clf_metrics(yt, yp, 'LOWO', short_well(well))
-    all_clf_rows.extend(rows)
-    print(f"    {short_well(well):8s}  Acc={acc:.3f}  Prec={prec:.3f}  "
-          f"Rec={rec:.3f}  F1={f1:.3f}")
-
-# ── B. Chronological ─────────────────────────────────────────────────────────
-print("\n  B. Chrono classification metrics:")
-for well, (yt, yp, _) in chrono_preds.items():
-    rows, acc, prec, rec, f1 = compute_clf_metrics(yt, yp, 'Chrono', short_well(well))
-    all_clf_rows.extend(rows)
-    print(f"    {short_well(well):8s}  Acc={acc:.3f}  Prec={prec:.3f}  "
-          f"Rec={rec:.3f}  F1={f1:.3f}")
-
-# ── C. Pooled ────────────────────────────────────────────────────────────────
-print("\n  C. Pooled classification metrics:")
-rows, acc, prec, rec, f1 = compute_clf_metrics(yt_pool, yp_pool, 'Pooled')
-all_clf_rows.extend(rows)
-print(f"    All    Acc={acc:.3f}  Prec={prec:.3f}  Rec={rec:.3f}  F1={f1:.3f}")
-
-clf_df = pd.DataFrame(all_clf_rows)
-clf_df.to_csv(os.path.join(DATA_DIR, 'classification_metrics.csv'), index=False)
-print(f"\n  Saved: data/classification_metrics.csv ({len(clf_df)} rows)")
-
-# Per-strategy macro-average summary for easy reading
-print("\n  ── Macro-Average Summary (regime classification) ──")
-macro = clf_df[clf_df['Regime'] == 'MACRO AVG'].groupby('Strategy')[
-    ['Precision', 'Recall', 'F1']].mean().round(4)
-print(macro.to_string())
-
-
-# =============================================================================
 # STAGE 6 - FEATURE IMPORTANCE (Gini + SHAP)
 # =============================================================================
 print("\n" + "=" * 72)
@@ -1072,7 +954,6 @@ outputs = {
     'data/chrono_split_results.csv': 'Chronological within-well split results',
     'data/pooled_split_results.csv': 'Pooled random split results',
     'data/validation_summary.csv': 'All 3 strategies compared',
-    'data/classification_metrics.csv': 'Accuracy, Precision, Recall, F1 per regime class',
     'data/feature_importance_gini.csv': 'Gini-based feature importance',
     'data/beggs_brill_results.csv': 'Beggs & Brill benchmark (ASSUMED geometry)',
     'data/rf_vs_bb_comparison.csv': 'RF vs B&B side-by-side comparison',
