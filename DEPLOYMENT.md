@@ -1,4 +1,4 @@
-﻿# 🚀 Streamlit Deployment Guide
+# 🚀 Streamlit Deployment Guide
 
 How to deploy the VLP Predictor Streamlit app — both locally and to the internet
 via **Streamlit Community Cloud** (free, shareable via URL).
@@ -100,13 +100,14 @@ git push
 
 ### Step 4 — Share your app
 
-Copy the URL from your Streamlit Cloud dashboard and share it:
+The app is live at:
 
 ```
-https://vlp-predictor.streamlit.app
+https://machine-learning-for-vertical-lift-performance-vlp-modeling-7k.streamlit.app/
 ```
 
----
+Share this URL in your project report, viva presentation, or with collaborators.
+
 
 ## Configuration File
 

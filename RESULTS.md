@@ -317,3 +317,384 @@ the clear progression from strict (LOWO) to lenient (pooled).
 ---
 
 *All results are traceable to `code/vlp_pipeline_v2.py`. Re-run the pipeline to regenerate.*
+
+---
+
+## Project Summary
+
+### Overview
+
+This project developed a **machine learning-based Vertical Lift Performance (VLP) model**
+for oil and gas production wells using the publicly available **Volve field dataset**
+released by Equinor. The core objective was to predict the **pressure drop (ΔP)** across
+the production tubing — from bottomhole to wellhead — as an alternative to classical
+physics-based correlations such as Beggs & Brill.
+
+---
+
+### Problem Statement
+
+Accurate VLP modelling is fundamental to well performance analysis, production
+optimisation, and nodal analysis. Classical correlations (e.g. Beggs & Brill, Hagedorn & Brown)
+were developed from laboratory data under idealised conditions and are known to lose accuracy
+for high water-cut, complex-geometry, or unconventional wells. This project asked:
+
+> *Can a data-driven Random Forest model, trained directly on field measurements,
+> outperform Beggs & Brill at predicting bottomhole-to-wellhead pressure drop?*
+
+---
+
+### Dataset
+
+| Item | Detail |
+|------|--------|
+| Source | Volve Field Open Dataset — Equinor ASA |
+| Wells used | 5 production wells: F-1C, F-11H, F-12H, F-14H, F-15D |
+| Records (after cleaning) | ~5,630 steady-state hourly production rows |
+| Target variable | ΔP (bar) — calculated as Downhole Pressure − Wellhead Pressure |
+| Features engineered | 16, including GLR, WC, log-rates, temperature gradient, GOR |
+
+---
+
+### Methodology
+
+#### 1. Data Preparation
+- Raw production data loaded from `volve_welldata_raw.csv`
+- Filtered to producer wells with valid Permanent Downhole Gauge (PDG) readings
+- Physical validity constraints applied (positive rates, positive ΔP, valid pressures)
+- Steady-state filter applied (on-stream hours ≥ 20 h/day)
+- Feature engineering: Gas-Liquid Ratio (GLR), Water Cut (WC), log-transformed rates,
+  temperature gradient (dT), Gas-Oil Ratio (GOR)
+
+#### 2. Model
+- **Algorithm:** Random Forest Regressor (`sklearn`)
+- **Tuning:** 3-fold GridSearchCV over `n_estimators`, `max_depth`, `min_samples_leaf`,
+  `max_features`
+- **Best hyperparameters:** `n_estimators=300`, `max_depth=None`,
+  `min_samples_leaf=1`, `max_features=0.5`
+
+#### 3. Validation — Three Independent Strategies
+
+| Strategy | Description | Purpose |
+|----------|-------------|---------|
+| **A — Leave-One-Well-Out (LOWO)** | Train on 4 wells, test on the 5th | Most honest cross-well generalisation |
+| **B — Chronological Within-Well** | Train on first 80% of each well's timeline, test on last 20% | Simulates real-time deployment |
+| **C — Pooled Random Split** | Random 80/20 split across all wells | Upper-bound interpolation performance |
+
+#### 4. Benchmark
+The Random Forest was benchmarked against the **Beggs & Brill** multiphase flow
+correlation, applied to the same dataset using assumed tubing geometry (ID = 4.892 in,
+depth = 3100 m, inclination = 65°).
+
+---
+
+### Key Results
+
+#### Regression Metrics (Primary)
+
+| Strategy | Mean R² | Mean RMSE (bar) | Mean MAPE (%) |
+|----------|:-------:|:---------------:|:-------------:|
+| LOWO (cross-well) | 0.170 | 14.98 | 7.30 |
+| Chronological (within-well) | −2.28 | 9.86 | 4.14 |
+| Pooled (random 80/20) | **0.976** | **4.12** | **0.74** |
+
+> The wide gap between Pooled (R²=0.976) and LOWO (R²=0.170) reveals that the model
+> excels at **interpolation within known conditions** but faces challenges
+> **generalising to entirely unseen wells** — a known limitation of supervised
+> learning on small, heterogeneous well datasets.
+
+#### RF vs Beggs & Brill
+
+| Metric | RF (LOWO) | Beggs & Brill |
+|--------|:---------:|:-------------:|
+| Mean RMSE (bar) | 14.98 | **63.46** |
+| Mean MAPE (%) | 7.30 | **34.61** |
+| Mean R² | 0.170 | **−12.1** |
+
+The Random Forest reduces RMSE by **~76%** vs Beggs & Brill even in its hardest
+validation scenario (LOWO), and by **~94%** in the pooled scenario.
+
+#### Feature Importance
+The two most important predictors are:
+
+1. **Gas-Liquid Ratio (GLR)** — 41.0% of Gini importance; governs the gas-lifting component of ΔP
+2. **Water Cut (WC)** — 25.8%; drives fluid density and flow regime
+
+This confirms the model is learning **physically meaningful patterns**, not statistical artefacts.
+
+---
+
+### Deliverables
+
+| Deliverable | File / Location |
+|-------------|----------------|
+| Training & evaluation pipeline | `code/vlp_pipeline_v2.py` |
+| Interactive Streamlit web app | `app/streamlit_app.py` |
+| Full results documentation | `RESULTS.md` (this file) |
+| Deployment guide | `DEPLOYMENT.md` |
+| 8 publication-quality figures | `figures/` |
+| Pre-computed result CSVs | `data/` |
+
+---
+
+### Streamlit Application
+
+An interactive web application was built with the following pages:
+
+- **🏠 Dashboard** — Live model metrics and dataset overview
+- **📊 Data Analytics** — Per-well exploratory analysis with box plots, histograms, scatter plots
+- **🔮 Single Prediction** — Real-time ΔP prediction from user-defined well conditions
+- **📈 VLP Curve Generator** — Generate full VLP curves by varying flow rate and water cut
+- **📉 Model Performance** — LOWO, Chronological, and Comparison results with charts
+- **🔍 Feature Importance** — Gini and SHAP importance visualisations
+- **📁 Batch Prediction** — Upload a CSV and predict ΔP for multiple scenarios
+
+The app is deployable to **Streamlit Community Cloud** (see `DEPLOYMENT.md`).
+
+---
+
+### Limitations & Future Work
+
+1. **Small dataset** — Only 5 wells with ~5,630 data points limits cross-well generalisation.
+   A larger, multi-field dataset would significantly improve LOWO performance.
+
+2. **No actual tubing geometry** — The Volve open dataset does not include measured tubing
+   dimensions, so Beggs & Brill used assumed geometry. This disadvantages the benchmark.
+
+3. **Steady-state assumption** — Transient flow events (shutdowns, ramp-ups) are excluded.
+   Extending to transient conditions is a natural next step.
+
+4. **Well-specific patterns dominate** — The gap between pooled and LOWO R² suggests the model
+   learns individual well signatures. Transfer learning or domain-adaptation techniques
+   could help bridge this gap for new wells.
+
+5. **Feature engineering scope** — PVT properties (viscosity, density) were approximated
+   via WC and GLR; incorporating direct PVT calculations could further improve accuracy.
+
+---
+
+*Developed as part of a final-year petroleum engineering project.*
+*Dataset: Volve Field Open Dataset © Equinor ASA (CC BY 4.0).*
+
+---
+
+## 📱 App User Guide — How to Use the VLP Predictor
+
+This guide explains every page of the interactive Streamlit application and how a user
+— whether a petroleum engineer, researcher, or student — can explore the model,
+test different well conditions, and interpret the results.
+
+> **🌐 Live App:**
+> **[https://machine-learning-for-vertical-lift-performance-vlp-modeling-7k.streamlit.app/](https://machine-learning-for-vertical-lift-performance-vlp-modeling-7k.streamlit.app/)**
+>
+> Or run locally: `streamlit run app/streamlit_app.py`
+
+---
+
+### 🏠 Dashboard
+
+**What you see:** The first page you land on. It shows a live snapshot of the model:
+
+- Training sample count, number of features, mean and standard deviation of ΔP
+- A comparison table of all three validation strategies (LOWO, Chronological, Pooled)
+- A quick summary of the best hyperparameters found during GridSearchCV
+
+**What to try:**
+
+- This page is read-only — it summarises everything the pipeline computed.
+- Use it to quickly check the model's overall quality before diving into predictions.
+- Look at the **Mean R²** row in the comparison table — the jump from LOWO (0.17) to
+  Pooled (0.976) immediately tells you how dependent the model is on seeing similar
+  wells during training.
+
+---
+
+### 📊 Data Analytics
+
+**What you see:** Interactive exploration of the Volve production dataset across 5 wells,
+split into three sub-tabs:
+
+| Tab | Content |
+|-----|---------|
+| **Well Overview** | Per-well production time series (oil, gas, water rates; ΔP over time) |
+| **Feature Distributions** | Histograms and box plots for any selected variable |
+| **VLP Curve** | Scatter plot of ΔP vs liquid rate, coloured by water cut |
+
+**What to change:**
+
+- **Well selector** (top of page) — tick/untick which of the 5 wells to include.
+- **Feature dropdown** (Feature Distributions tab) — switch between GLR, WC, q_oil,
+  AVG_WHP_P, AVG_DOWNHOLE_TEMPERATURE, etc. to see how each variable is distributed
+  across wells.
+- **VLP Curve** — select a single well or all wells to see how the ΔP–liquid rate
+  relationship changes with water cut. Higher WC = lower ΔP per unit liquid rate
+  (heavier, less-gas-lifted fluid).
+
+**What to look for:**
+
+- **F-11H and F-14H** have the most data and widest ΔP range — they are the model's
+  most reliable training wells.
+- **F-15D** has a very narrow ΔP band (~150–170 bar) — this is why LOWO struggles
+  when F-15D is the held-out well.
+- **WC is the key visual separator** in the VLP curve — group by WC using the colour
+  scale to see the physical trend clearly.
+
+---
+
+### 🔮 Single Prediction
+
+**What you see:** A form where you enter real or hypothetical well conditions and the
+model instantly predicts the pressure drop (ΔP) in bar.
+
+**Inputs you can change:**
+
+| Input | Typical Range | What it represents |
+|-------|:------------:|-------------------|
+| Oil Rate (Sm³/d) | 100 – 5,000 | Surface oil production rate |
+| Gas Rate (Sm³/d) | 10,000 – 500,000 | Surface gas production rate |
+| Water Rate (Sm³/d) | 0 – 3,000 | Surface water production rate |
+| Wellhead Pressure (bar) | 20 – 150 | Flowing pressure at surface |
+| Wellhead Temperature (°C) | 40 – 90 | Flowing temperature at surface |
+| Downhole Temperature (°C) | 80 – 150 | Reservoir temperature at PDG depth |
+| Choke Size (%) | 5 – 100 | Surface choke opening |
+| On-Stream Hours | 1 – 24 | Hours of flow in the day |
+
+**How to use it — practical examples:**
+
+**Example 1 — Low water-cut well (early life):**
+Set q_oil=2000, q_gas=300000, q_wat=200, WHP=60 bar, WHT=70°C, DHT=110°C.
+Expect a **low–medium ΔP** (~120–160 bar) because gas is effectively lifting the fluid.
+
+**Example 2 — High water-cut well (late life):**
+Set q_oil=500, q_gas=50000, q_wat=2500, WHP=40 bar, WHT=60°C, DHT=100°C.
+Expect a **higher ΔP** (~180–220 bar) because heavy water-rich fluid requires more
+pressure to lift.
+
+**Example 3 — Sensitivity test (vary one variable):**
+Keep all inputs fixed, then change only q_gas from 50,000 → 300,000 Sm³/d.
+You will see ΔP **decrease** — more gas lightens the fluid column (gas-lift effect).
+
+**Output:**
+
+- **Predicted ΔP** in bar
+- **Estimated Bottomhole Flowing Pressure** = Wellhead Pressure + ΔP
+- Use this to check if the well is above or below reservoir pressure for nodal analysis
+
+---
+
+### 📈 VLP Curve Generator
+
+**What you see:** A tool that generates a full **Vertical Lift Performance curve**
+by sweeping liquid rate from low to high, for up to three different water cut levels.
+
+**What to change:**
+
+| Control | Effect |
+|---------|--------|
+| Base oil/gas/water rates | Sets the fluid composition starting point |
+| Wellhead pressure & temperature | Changes the surface boundary condition |
+| Water Cut levels (WC 1, 2, 3) | Plot separate curves for different WC values |
+| Rate sweep range | Set min and max liquid rate for the x-axis |
+
+**What to look for:**
+
+- Each WC curve should show a **U-shape or monotonically increasing** ΔP with rate
+  (more flow = more friction = higher ΔP)
+- Higher WC curves sit **above** lower WC curves (heavier fluid = more ΔP at same rate)
+- The VLP curves can be overlaid with an IPR (Inflow Performance Relationship) to find
+  the **natural flow point** — the intersection gives the expected producing rate
+
+---
+
+### 📉 Model Performance
+
+**What you see:** The validation results across three tabs:
+
+| Tab | What it shows |
+|-----|--------------|
+| **LOWO Results** | Per-well R², RMSE, MAE, MAPE when that well is held out. Includes a bar chart. |
+| **Chronological Split** | Per-well results when the last 20% of each well's timeline is the test set |
+| **Comparison** | Side-by-side table of all three strategies |
+
+**How to read the results:**
+
+- **R² close to 1.0** = excellent fit. R² below 0 = the model is worse than simply
+  predicting the mean — this happens in the Chronological split for some wells where
+  production behaviour changes fundamentally over time.
+- **RMSE in bar** — a RMSE of 15 bar means the average prediction error is ±15 bar
+  on a ΔP that typically ranges 100–250 bar (~8–12% relative error).
+- **MAPE (%)** — the most intuitive metric: a MAPE of 7% means predictions are on
+  average within 7% of the true value.
+
+**What to compare:**
+
+- Compare **LOWO vs Pooled** — this gap shows how much the model relies on
+  seeing the same wells in training. For a new field with no training data,
+  LOWO is the realistic expectation.
+- Compare **F-11H vs F-15D** in the LOWO tab — F-11H (R²=0.86) vs F-15D (negative R²)
+  illustrates why data diversity within training wells matters.
+
+---
+
+### 🔍 Feature Importance
+
+**What you see:** Two visualisations of which input variables most influence ΔP:
+
+| View | Method |
+|------|--------|
+| **Gini Importance** | How much each feature reduces impurity across all decision trees |
+| **SHAP Values** | Game-theory-based attribution — more reliable and directional |
+
+**How to read SHAP:**
+
+- Features near the top of the SHAP beeswarm plot drive the most predictions.
+- **Red dots = high feature value; Blue dots = low feature value**
+- A red dot on the right side means: *high value of this feature → pushes ΔP up*
+- A blue dot on the left side means: *low value of this feature → pushes ΔP down*
+
+**Key insight:** GLR is the #1 driver. High GLR (lots of gas relative to liquid) →
+low ΔP. WC is #2 — high water cut → high ΔP. This matches physical intuition perfectly.
+
+---
+
+### 📁 Batch Prediction
+
+**What you see:** A CSV upload tool for predicting ΔP across many well conditions at once.
+
+**How to use it:**
+
+1. Prepare a CSV file with columns matching the 8 input variables:
+   `q_oil`, `q_gas`, `q_wat`, `AVG_WHP_P`, `AVG_WHT_P`,
+   `AVG_DOWNHOLE_TEMPERATURE`, `AVG_CHOKE_SIZE_P`, `ON_STREAM_HRS`
+
+2. Upload the CSV using the file uploader.
+
+3. Click **"Run Batch Prediction"** — the app adds a `Predicted_dP` column.
+
+4. Download the results as a new CSV.
+
+**Use case:** Production engineers can upload a full month of proposed operating
+conditions for a new well and get predicted ΔP for all scenarios in seconds — far
+faster than running individual nodal analysis calculations.
+
+---
+
+### ℹ️ About
+
+The About page contains the project background, author information, dataset attribution
+(Equinor Volve Open Dataset), and links to source files.
+
+---
+
+### Quick Reference — What to Change to See What
+
+| I want to see... | Go to... | Change this... |
+|-----------------|----------|---------------|
+| How ΔP changes with water cut | VLP Curve Generator | Adjust the 3 WC values |
+| How ΔP changes with gas rate | Single Prediction | Increase/decrease q_gas |
+| Which well the model knows best | Model Performance → LOWO | Read per-well R² |
+| Which variable matters most | Feature Importance | Read SHAP beeswarm |
+| How reliable the model is | Model Performance → Comparison | Compare LOWO vs Pooled R² |
+| ΔP for 100 different conditions | Batch Prediction | Upload a CSV |
+| Distribution of WC across wells | Data Analytics → Feature Distributions | Select Water Cut |
+
