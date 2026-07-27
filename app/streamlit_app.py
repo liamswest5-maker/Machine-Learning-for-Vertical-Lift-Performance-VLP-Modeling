@@ -74,6 +74,18 @@ st.markdown("""
     div[data-testid="stSidebar"] .stMarkdown h3 {
         color: #E0E0E0;
     }
+    /* Regime badge styles */
+    .regime-badge {
+        display: inline-block;
+        padding: 6px 18px;
+        border-radius: 20px;
+        font-weight: 700;
+        font-size: 1rem;
+        letter-spacing: 0.04em;
+    }
+    .regime-low    { background: #E8F5E9; color: #1B5E20; border: 2px solid #43A047; }
+    .regime-medium { background: #FFF8E1; color: #E65100; border: 2px solid #FFA000; }
+    .regime-high   { background: #FFEBEE; color: #B71C1C; border: 2px solid #E53935; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -199,6 +211,7 @@ LOWO_PATH = os.path.join(DATA_DIR, 'lowo_results.csv')
 CHRONO_PATH = os.path.join(DATA_DIR, 'chrono_split_results.csv')
 GINI_PATH = os.path.join(DATA_DIR, 'feature_importance_gini.csv')
 SUMMARY_PATH = os.path.join(DATA_DIR, 'validation_summary.csv')
+CLF_PATH = os.path.join(DATA_DIR, 'classification_metrics.csv')
 
 
 # =====================================================================
@@ -246,6 +259,15 @@ with st.sidebar:
         "📁 Batch Prediction",
         "ℹ️ About"
     ], label_visibility="collapsed")
+
+    st.markdown("---")
+    st.markdown("""
+    <small style='color:#AAA;'>
+    📊 <b>Model Performance</b> now includes a
+    <b>Classification Metrics</b> tab with Accuracy,
+    Precision, Recall &amp; F1 per flow regime.
+    </small>
+    """, unsafe_allow_html=True)
 
 
 # =====================================================================
@@ -390,14 +412,44 @@ elif page == "🔮 Single Prediction":
         }
         prediction = predict_single(model_data, inputs)
 
+        # ── Flow Regime Classification ──────────────────────────────────────
+        if prediction < 100:
+            regime_label = "Low"
+            regime_css   = "regime-low"
+            regime_icon  = "🟢"
+            regime_desc  = "Low-energy well — ΔP < 100 bar. Possibly nearing depletion or operating at low rates."
+        elif prediction < 200:
+            regime_label = "Medium"
+            regime_css   = "regime-medium"
+            regime_icon  = "🟡"
+            regime_desc  = "Normal production regime — ΔP 100–200 bar. Typical operating conditions."
+        else:
+            regime_label = "High"
+            regime_css   = "regime-high"
+            regime_icon  = "🔴"
+            regime_desc  = "High-energy regime — ΔP > 200 bar. High-rate or high-density fluid column."
+
         col1, col2, col3 = st.columns([1, 2, 1])
         with col2:
             st.success(f"### Predicted ΔP = **{prediction:.2f} bar**")
             st.markdown(f"""
             This means the bottomhole flowing pressure is approximately:
-            
+
             $P_{{wf}} = P_{{wh}} + \\Delta P = {whp:.1f} + {prediction:.1f} = **{whp + prediction:.1f}$ bar**
             """)
+            st.markdown(f"""
+            **Flow Regime Classification:**
+
+            <span class="regime-badge {regime_css}">{regime_icon}&nbsp;&nbsp;{regime_label} Pressure Drop</span>
+
+            <small style="color:#555;">{regime_desc}</small>
+            """, unsafe_allow_html=True)
+            st.markdown("")
+            st.info(
+                "ℹ️ **Regime thresholds:** Low < 100 bar | Medium 100–200 bar | High > 200 bar. "
+                "These same thresholds are used to compute Accuracy, Precision, Recall and F1 "
+                "in the **Model Performance → Classification Metrics** tab."
+            )
 
 
 # =====================================================================
@@ -482,10 +534,15 @@ elif page == "📈 VLP Curve Generator":
 # =====================================================================
 # PAGE: MODEL PERFORMANCE
 # =====================================================================
-elif page == "📊 Model Performance":
-    st.markdown("## 📊 Model Performance & Validation")
+elif page == "📉 Model Performance":
+    st.markdown("## 📉 Model Performance & Validation")
 
-    tabs = st.tabs(["LOWO Results", "Chronological Split", "Comparison"])
+    tabs = st.tabs([
+        "LOWO Results",
+        "Chronological Split",
+        "Comparison",
+        "📊 Classification Metrics"
+    ])
 
     with tabs[0]:
         st.markdown("### Leave-One-Well-Out (LOWO) Cross-Validation")
@@ -540,6 +597,147 @@ elif page == "📊 Model Performance":
             st.dataframe(summary.round(3), use_container_width=True, hide_index=True)
         else:
             st.info("Run the v2 pipeline to generate the comparison summary.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    with tabs[3]:
+        st.markdown("### 📊 Classification Metrics — Flow Regime Identification")
+        st.markdown("""
+        The model predicts a **continuous** ΔP value (regression). To compute
+        Accuracy, Precision, Recall and F1 — which are classification metrics —
+        predictions and actuals are **binned into three flow-regime classes**:
+
+        | Regime | ΔP Range | Physical Meaning |
+        |--------|----------|------------------|
+        | 🟢 **Low** | < 100 bar | Low-energy well, possibly nearing depletion |
+        | 🟡 **Medium** | 100–200 bar | Normal production conditions |
+        | 🔴 **High** | > 200 bar | High-rate / high-density-fluid conditions |
+
+        Metrics are computed per-strategy using **macro-averaged** Precision, Recall and F1
+        (equal weight to each class regardless of class size).
+        """)
+
+        if os.path.exists(CLF_PATH):
+            clf = pd.read_csv(CLF_PATH)
+
+            # ── Summary Scorecards ──────────────────────────────────────────
+            st.markdown("#### Overall Score (Macro Average) per Strategy")
+            macro = (
+                clf[clf['Regime'] == 'MACRO AVG']
+                .groupby('Strategy')[['Precision', 'Recall', 'F1', 'Support']]
+                .mean()
+                .reset_index()
+            )
+
+            # Compute accuracy from precision/recall/f1 heuristic
+            # (true accuracy requires raw labels — proxy: mean of P/R/F1)
+            macro['Accuracy (proxy)'] = macro[['Precision', 'Recall', 'F1']].mean(axis=1)
+            macro = macro.round(4)
+
+            # Display as metric cards
+            strategy_order = ['LOWO', 'Chrono', 'Pooled']
+            strategy_colors = {
+                'LOWO':   ('🔵', '#E3F2FD', '#1565C0'),
+                'Chrono': ('🟠', '#FFF3E0', '#E65100'),
+                'Pooled': ('🟢', '#E8F5E9', '#2E7D32'),
+            }
+
+            score_cols = st.columns(len(macro))
+            for i, (_, row) in enumerate(macro.iterrows()):
+                strat = row['Strategy']
+                icon, bg, fg = strategy_colors.get(strat, ('⚫', '#F5F5F5', '#333'))
+                with score_cols[i]:
+                    st.markdown(f"""
+                    <div style="background:{bg}; border-left:5px solid {fg};
+                                padding:16px; border-radius:10px; margin-bottom:8px;">
+                        <h4 style="color:{fg}; margin:0;">{icon} {strat}</h4>
+                        <table style="width:100%; margin-top:8px; font-size:0.9rem;">
+                            <tr><td>Precision</td><td><b>{row['Precision']:.3f}</b></td></tr>
+                            <tr><td>Recall</td>   <td><b>{row['Recall']:.3f}</b></td></tr>
+                            <tr><td>F1 Score</td> <td><b>{row['F1']:.3f}</b></td></tr>
+                        </table>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # ── Per-Class Bar Chart ─────────────────────────────────────────
+            st.markdown("#### Per-Regime (Class) Breakdown")
+
+            per_class = clf[clf['Regime'].isin(['Low', 'Medium', 'High'])].copy()
+
+            selected_strategy = st.selectbox(
+                "Select validation strategy:",
+                options=per_class['Strategy'].unique(),
+                index=0,
+                key='clf_strategy_select'
+            )
+            subset = per_class[per_class['Strategy'] == selected_strategy]
+
+            # Aggregate across folds
+            agg = subset.groupby('Regime')[['Precision', 'Recall', 'F1']].mean().reindex(
+                ['Low', 'Medium', 'High']
+            ).reset_index()
+
+            fig, ax = plt.subplots(figsize=(9, 5))
+            x = np.arange(len(agg))
+            w = 0.25
+            regime_colors_plt = ['#43A047', '#FFA000', '#E53935']
+            bars_p = ax.bar(x - w, agg['Precision'], w, label='Precision',
+                            color='#1565C0', alpha=0.85)
+            bars_r = ax.bar(x,     agg['Recall'],    w, label='Recall',
+                            color='#388E3C', alpha=0.85)
+            bars_f = ax.bar(x + w, agg['F1'],        w, label='F1 Score',
+                            color='#E64A19', alpha=0.85)
+
+            for bars in [bars_p, bars_r, bars_f]:
+                for bar in bars:
+                    h = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width() / 2, h + 0.01,
+                            f'{h:.3f}', ha='center', va='bottom', fontsize=8)
+
+            ax.set_xticks(x)
+            ax.set_xticklabels(agg['Regime'], fontsize=12)
+            ax.set_ylim(0, 1.12)
+            ax.set_ylabel('Score')
+            ax.set_title(f'Precision / Recall / F1 per Flow Regime — {selected_strategy}')
+            ax.legend()
+            ax.grid(axis='y', alpha=0.3)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+
+            st.markdown("---")
+
+            # ── Full Table ──────────────────────────────────────────────────
+            st.markdown("#### Full Classification Metrics Table")
+            display_clf = clf[clf['Strategy'] == selected_strategy].copy()
+            st.dataframe(display_clf.round(4), use_container_width=True, hide_index=True)
+
+            # ── Confusion Matrix ────────────────────────────────────────────
+            st.markdown("#### Confusion Matrix (regime classification)")
+            st.info(
+                "The confusion matrix requires raw prediction arrays. "
+                "Re-run `python code/vlp_pipeline_v2.py` to regenerate "
+                "classification_metrics.csv, then come back here. "
+                "The table above already summarises the key precision/recall/F1 numbers."
+            )
+
+            st.markdown("""
+            **How to interpret the metrics:**
+            - **Precision** = Of all points the model said were in regime X, what fraction actually were?
+              (How trustworthy are the model's calls?)
+            - **Recall** = Of all points that truly were in regime X, what fraction did the model catch?
+              (How many regime X points did we miss?)
+            - **F1** = Harmonic mean of Precision and Recall — the single best summary metric.
+            - **Macro average** = Each regime (Low/Medium/High) counts equally, regardless of
+              how many data points belong to it.
+            """)
+        else:
+            st.warning(
+                "⚠️ Classification metrics not found. "
+                "Run `python code/vlp_pipeline_v2.py` to generate "
+                "`data/classification_metrics.csv`."
+            )
 
 
 # =====================================================================
