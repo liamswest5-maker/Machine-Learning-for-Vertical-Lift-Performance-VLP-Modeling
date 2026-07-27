@@ -990,9 +990,15 @@ elif page == "ℹ️ About":
     col1, col2 = st.columns([1, 2])
 
     with col1:
+        # Author photo
+        author_photo = os.path.join(os.path.dirname(__file__), 'assets', 'author_photo.jpg')
+        if os.path.exists(author_photo):
+            st.image(author_photo, use_container_width=True,
+                     caption="Williams Iwum — STSE 2026 @ PTI Conference")
         st.markdown("""
         <div style="background: linear-gradient(135deg, #1565C0 0%, #0D47A1 100%);
-                    padding: 30px; border-radius: 16px; text-align: center; color: white;">
+                    padding: 22px; border-radius: 16px; text-align: center; color: white;
+                    margin-top: 8px;">
             <h2 style="color: white; margin-bottom: 5px;">Williams Iwum</h2>
             <p style="font-size: 1.05rem; opacity: 0.9;">Final Year Student</p>
             <p style="font-size: 0.95rem; opacity: 0.8;">
@@ -1002,6 +1008,7 @@ elif page == "ℹ️ About":
             </p>
         </div>
         """, unsafe_allow_html=True)
+
 
     with col2:
         st.markdown("### About This Project")
