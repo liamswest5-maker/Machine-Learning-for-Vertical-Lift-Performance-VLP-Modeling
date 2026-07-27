@@ -993,21 +993,15 @@ elif page == "ℹ️ About":
         # Author photo
         author_photo = os.path.join(os.path.dirname(__file__), 'assets', 'author_photo.jpg')
         if os.path.exists(author_photo):
-            st.image(author_photo, use_container_width=True,
-                     caption="Williams Iwum — STSE 2026 @ PTI Conference")
+            st.image(author_photo, use_container_width=True)
+        st.markdown("### Williams Iwum")
         st.markdown("""
-        <div style="background: linear-gradient(135deg, #1565C0 0%, #0D47A1 100%);
-                    padding: 22px; border-radius: 16px; text-align: center; color: white;
-                    margin-top: 8px;">
-            <h2 style="color: white; margin-bottom: 5px;">Williams Iwum</h2>
-            <p style="font-size: 1.05rem; opacity: 0.9;">Final Year Student</p>
-            <p style="font-size: 0.95rem; opacity: 0.8;">
-                Department of Petroleum Engineering<br>
-                <strong>Federal University of Petroleum Resources</strong><br>
-                Effurun, Delta State, Nigeria
-            </p>
-        </div>
-        """, unsafe_allow_html=True)
+        **Final Year Student**
+
+        Department of Petroleum Engineering  
+        Federal University of Petroleum Resources  
+        Effurun, Delta State, Nigeria
+        """)
 
 
     with col2:
