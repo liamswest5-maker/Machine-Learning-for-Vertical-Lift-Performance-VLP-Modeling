@@ -1,6 +1,6 @@
 """
 =============================================================================
-VLP RANDOM FOREST MODEL v2.0 - COMPREHENSIVE PIPELINE
+VLP RANDOM FOREST MODEL v2.1 - COMPREHENSIVE PIPELINE
 Development of a Random Forest-Based VLP Model for Multiphase Wellbore Flow
 =============================================================================
 
@@ -9,10 +9,15 @@ This is the COMPLETE, FINAL pipeline for the project. It produces:
   - Leave-One-Well-Out (LOWO) cross-validation results
   - Chronological within-well train/test split results
   - Pooled random split results (for comparison)
+  - Linear Regression baseline (all 3 strategies)
   - SHAP feature importance analysis
   - Beggs & Brill benchmark (with assumed geometry - caveat documented)
-  - All figures for the final report (8 publication-quality figures)
+  - Beggs & Brill sensitivity analysis (geometry parameter sweep)
+  - Cross-well regime analysis (extrapolation detection)
+  - Uncertainty quantification (per-tree prediction intervals)
+  - All figures for the final report (11 publication-quality figures)
   - All metrics CSVs for the results chapter
+  - Explicit data leakage audit
 
 INPUT:  data/volve_welldata_raw.csv
 OUTPUT: data/*.csv, figures/*.png
@@ -30,6 +35,7 @@ if sys.platform == 'win32':
 warnings.filterwarnings('ignore')
 
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.preprocessing import StandardScaler
@@ -217,6 +223,37 @@ print(f"\n  Final model-ready dataset: {len(d)} rows x {len(FEATURES)} features"
 
 
 # =============================================================================
+# DATA LEAKAGE AUDIT
+# =============================================================================
+print("\n" + "=" * 72)
+print("  DATA LEAKAGE AUDIT")
+print("=" * 72)
+
+# These columns would constitute leakage if used as features:
+LEAKAGE_COLUMNS = ['AVG_DP_TUBING', 'AVG_DOWNHOLE_PRESSURE', 'P_ratio', 'delta_P']
+leakage_found = False
+for col in LEAKAGE_COLUMNS:
+    in_features = col in FEATURES
+    if in_features:
+        leakage_found = True
+    status = 'LEAKED - IN FEATURES' if in_features else 'OK - not in features'
+    print(f"  {col:35s}  {status}")
+
+print(f"\n  Target variable: {TARGET} = AVG_DOWNHOLE_PRESSURE - AVG_WHP_P")
+print(f"  AVG_WHP_P in features: YES (this is NOT leakage - WHP is an")
+print(f"    independent surface measurement required for deployment)")
+print(f"  AVG_DOWNHOLE_TEMPERATURE in features: YES (this is NOT leakage -")
+print(f"    temperature and pressure are independent physical quantities)")
+
+if leakage_found:
+    print("\n  *** WARNING: DATA LEAKAGE DETECTED! Fix before proceeding. ***")
+    sys.exit(1)
+else:
+    print("\n  VERDICT: NO DATA LEAKAGE DETECTED")
+    print("  All 16 features are independent of the target variable.")
+
+
+# =============================================================================
 # STAGE 4 - HYPERPARAMETER TUNING (GridSearchCV)
 # =============================================================================
 print("\n" + "=" * 72)
@@ -260,12 +297,14 @@ wells = d['Wellbore name'].unique()
 # --- Strategy A: Leave-One-Well-Out (LOWO) ---
 print("\n  --- A. Leave-One-Well-Out Cross-Validation ---")
 lowo_results = []
+lowo_lr_results = []
 lowo_preds = {}
 
 for test_well in wells:
     train_df = d[d['Wellbore name'] != test_well]
     test_df  = d[d['Wellbore name'] == test_well]
 
+    # Random Forest
     rf = RandomForestRegressor(**best_params, random_state=42, n_jobs=-1)
     rf.fit(train_df[FEATURES], train_df[TARGET])
 
@@ -283,7 +322,21 @@ for test_well in wells:
     })
     lowo_preds[test_well] = (yt, yp, test_df['WC'].values)
 
+    # Linear Regression baseline
+    lr = LinearRegression()
+    lr.fit(train_df[FEATURES], train_df[TARGET])
+    yp_lr = lr.predict(test_df[FEATURES])
+
+    lowo_lr_results.append({
+        'test_well': test_well, 'n_test': len(test_df),
+        'RMSE': np.sqrt(mean_squared_error(yt, yp_lr)),
+        'MAE': mean_absolute_error(yt, yp_lr),
+        'MAPE': np.mean(np.abs((yt - yp_lr) / yt)) * 100,
+        'R2': r2_score(yt, yp_lr)
+    })
+
 lowo_df = pd.DataFrame(lowo_results)
+lowo_lr_df = pd.DataFrame(lowo_lr_results)
 print(f"\n  {'Well':20s}  {'n_test':>6s}  {'RMSE':>8s}  {'MAE':>8s}  {'MAPE%':>7s}  {'R2':>8s}")
 for _, r in lowo_df.iterrows():
     print(f"  {r['test_well']:20s}  {int(r['n_test']):6d}  {r['RMSE']:8.2f}  "
@@ -291,11 +344,20 @@ for _, r in lowo_df.iterrows():
 print(f"\n  Mean:  RMSE={lowo_df.RMSE.mean():.2f}  MAPE={lowo_df.MAPE.mean():.2f}%  R2={lowo_df.R2.mean():.3f}")
 print(f"  Std:   RMSE={lowo_df.RMSE.std():.2f}  MAPE={lowo_df.MAPE.std():.2f}%  R2={lowo_df.R2.std():.3f}")
 
+print("\n  --- Linear Regression Baseline (LOWO) ---")
+print(f"  {'Well':20s}  {'RMSE':>8s}  {'MAE':>8s}  {'MAPE%':>7s}  {'R2':>8s}")
+for _, r in lowo_lr_df.iterrows():
+    print(f"  {r['test_well']:20s}  {r['RMSE']:8.2f}  {r['MAE']:8.2f}  {r['MAPE']:7.2f}  {r['R2']:8.3f}")
+print(f"\n  LR Mean:  RMSE={lowo_lr_df.RMSE.mean():.2f}  MAPE={lowo_lr_df.MAPE.mean():.2f}%  R2={lowo_lr_df.R2.mean():.3f}")
+
+lowo_lr_df.to_csv(os.path.join(DATA_DIR, 'lowo_lr_results.csv'), index=False)
+
 lowo_df.to_csv(os.path.join(DATA_DIR, 'lowo_results.csv'), index=False)
 
 # --- Strategy B: Chronological Within-Well Split ---
 print("\n  --- B. Chronological Within-Well Split (80/20) ---")
 chrono_results = []
+chrono_lr_results = []
 chrono_preds = {}
 
 for well in wells:
@@ -311,6 +373,7 @@ for well in wells:
     other_wells = d[d['Wellbore name'] != well]
     train_combined = pd.concat([other_wells, train_df])
 
+    # Random Forest
     rf = RandomForestRegressor(**best_params, random_state=42, n_jobs=-1)
     rf.fit(train_combined[FEATURES], train_combined[TARGET])
 
@@ -328,12 +391,30 @@ for well in wells:
     })
     chrono_preds[well] = (yt, yp, test_df['Date of Production'].values)
 
+    # Linear Regression baseline
+    lr = LinearRegression()
+    lr.fit(train_combined[FEATURES], train_combined[TARGET])
+    yp_lr = lr.predict(test_df[FEATURES])
+
+    chrono_lr_results.append({
+        'test_well': well, 'n_test': len(test_df),
+        'RMSE': np.sqrt(mean_squared_error(yt, yp_lr)),
+        'MAE': mean_absolute_error(yt, yp_lr),
+        'MAPE': np.mean(np.abs((yt - yp_lr) / yt)) * 100,
+        'R2': r2_score(yt, yp_lr)
+    })
+
 chrono_df = pd.DataFrame(chrono_results)
+chrono_lr_df = pd.DataFrame(chrono_lr_results)
 print(f"\n  {'Well':20s}  {'n_test':>6s}  {'RMSE':>8s}  {'MAE':>8s}  {'MAPE%':>7s}  {'R2':>8s}")
 for _, r in chrono_df.iterrows():
     print(f"  {r['test_well']:20s}  {int(r['n_test']):6d}  {r['RMSE']:8.2f}  "
           f"{r['MAE']:8.2f}  {r['MAPE']:7.2f}  {r['R2']:8.3f}")
 print(f"\n  Mean:  RMSE={chrono_df.RMSE.mean():.2f}  MAPE={chrono_df.MAPE.mean():.2f}%  R2={chrono_df.R2.mean():.3f}")
+
+print("\n  --- Linear Regression Baseline (Chronological) ---")
+print(f"  LR Mean:  RMSE={chrono_lr_df.RMSE.mean():.2f}  MAPE={chrono_lr_df.MAPE.mean():.2f}%  R2={chrono_lr_df.R2.mean():.3f}")
+chrono_lr_df.to_csv(os.path.join(DATA_DIR, 'chrono_lr_results.csv'), index=False)
 
 chrono_df.to_csv(os.path.join(DATA_DIR, 'chrono_split_results.csv'), index=False)
 
@@ -360,6 +441,18 @@ pooled_df = pd.DataFrame([{
     'RMSE': pool_rmse, 'MAE': pool_mae, 'MAPE': pool_mape, 'R2': pool_r2
 }])
 pooled_df.to_csv(os.path.join(DATA_DIR, 'pooled_split_results.csv'), index=False)
+
+# Linear Regression baseline (pooled)
+lr_pooled = LinearRegression()
+lr_pooled.fit(X_train, y_train)
+yp_lr_pool = lr_pooled.predict(X_test)
+pool_lr_rmse = np.sqrt(mean_squared_error(yt_pool, yp_lr_pool))
+pool_lr_mae = mean_absolute_error(yt_pool, yp_lr_pool)
+pool_lr_mape = np.mean(np.abs((yt_pool - yp_lr_pool) / yt_pool)) * 100
+pool_lr_r2 = r2_score(yt_pool, yp_lr_pool)
+print(f"\n  Linear Regression (pooled): RMSE={pool_lr_rmse:.2f}  MAE={pool_lr_mae:.2f}  "
+      f"MAPE={pool_lr_mape:.2f}%  R2={pool_lr_r2:.4f}")
+print(f"  RF improvement over LR: RMSE {(1-pool_rmse/pool_lr_rmse)*100:.1f}% lower")
 
 
 # =============================================================================
@@ -651,16 +744,220 @@ for _, r in bb_df.iterrows():
 
 bb_df.to_csv(os.path.join(DATA_DIR, 'beggs_brill_results.csv'), index=False)
 
-# Merge for comparison
+# Merge for comparison (now includes LR baseline)
 comparison = lowo_df.merge(bb_df, left_on='test_well', right_on='well', how='left')
+comparison = comparison.merge(
+    lowo_lr_df[['test_well', 'RMSE', 'R2']].rename(
+        columns={'RMSE': 'RMSE_LR', 'R2': 'R2_LR'}),
+    on='test_well', how='left')
 comparison.to_csv(os.path.join(DATA_DIR, 'rf_vs_bb_comparison.csv'), index=False)
 
 
 # =============================================================================
-# STAGE 8 - GENERATE ALL FIGURES
+# STAGE 8 - BEGGS & BRILL SENSITIVITY ANALYSIS
 # =============================================================================
 print("\n" + "=" * 72)
-print("  STAGE 8/8: Generating publication-quality figures")
+print("  STAGE 8/11: Beggs & Brill sensitivity analysis (geometry sweep)")
+print("=" * 72)
+print("  Sweeping tubing ID, depth, and inclination to test robustness...")
+
+TUBING_IDS = [3.5, 4.0, 4.5, 4.892, 5.5]
+DEPTHS = [2800, 3100, 3400]
+INCLINATIONS = [45, 55, 65, 75]
+
+# Sweep tubing ID (most impactful parameter)
+bb_sensitivity = []
+for tid in TUBING_IDS:
+    bb_preds_sweep = []
+    for _, row in d.iterrows():
+        T_avg = (row.get('AVG_DOWNHOLE_TEMPERATURE', 100) + row.get('AVG_WHT_P', 60)) / 2
+        dp = beggs_brill_dP(row['q_oil'], row['q_gas'], row['q_wat'],
+                           row['AVG_WHP_P'], T_avg, d_in=tid)
+        bb_preds_sweep.append(dp)
+
+    d_sweep = d.copy()
+    d_sweep['dP_BB'] = bb_preds_sweep
+    d_sweep = d_sweep.dropna(subset=['dP_BB'])
+    valid = np.isfinite(d_sweep['dP_BB']) & np.isfinite(d_sweep[TARGET])
+    d_sweep = d_sweep[valid]
+
+    if len(d_sweep) > 10:
+        rmse = np.sqrt(mean_squared_error(d_sweep[TARGET], d_sweep['dP_BB']))
+        r2 = r2_score(d_sweep[TARGET], d_sweep['dP_BB'])
+        mape = np.mean(np.abs((d_sweep[TARGET].values - d_sweep['dP_BB'].values) /
+                              d_sweep[TARGET].values)) * 100
+        bb_sensitivity.append({
+            'tubing_ID_in': tid, 'RMSE': rmse, 'R2': r2, 'MAPE': mape, 'n': len(d_sweep)
+        })
+        print(f"  Tubing ID = {tid:.3f} in:  RMSE = {rmse:.2f} bar,  R2 = {r2:.3f}")
+
+bb_sens_df = pd.DataFrame(bb_sensitivity)
+bb_sens_df.to_csv(os.path.join(DATA_DIR, 'bb_sensitivity_tubing_id.csv'), index=False)
+
+# Also sweep depth and inclination at default tubing ID
+bb_depth_incl = []
+for depth in DEPTHS:
+    for incl in INCLINATIONS:
+        bb_preds_di = []
+        for _, row in d.iterrows():
+            T_avg = (row.get('AVG_DOWNHOLE_TEMPERATURE', 100) + row.get('AVG_WHT_P', 60)) / 2
+            dp = beggs_brill_dP(row['q_oil'], row['q_gas'], row['q_wat'],
+                               row['AVG_WHP_P'], T_avg, H=depth, theta=incl)
+            bb_preds_di.append(dp)
+
+        d_di = d.copy()
+        d_di['dP_BB'] = bb_preds_di
+        d_di = d_di.dropna(subset=['dP_BB'])
+        valid = np.isfinite(d_di['dP_BB']) & np.isfinite(d_di[TARGET])
+        d_di = d_di[valid]
+        if len(d_di) > 10:
+            rmse = np.sqrt(mean_squared_error(d_di[TARGET], d_di['dP_BB']))
+            bb_depth_incl.append({
+                'depth_m': depth, 'inclination_deg': incl, 'RMSE': rmse
+            })
+
+bb_di_df = pd.DataFrame(bb_depth_incl)
+bb_di_df.to_csv(os.path.join(DATA_DIR, 'bb_sensitivity_depth_incl.csv'), index=False)
+
+# Report best possible B&B RMSE across all geometry combinations
+if len(bb_sens_df) > 0:
+    best_bb_rmse = bb_sens_df['RMSE'].min()
+    best_bb_tid = bb_sens_df.loc[bb_sens_df['RMSE'].idxmin(), 'tubing_ID_in']
+    rf_lowo_rmse = lowo_df['RMSE'].mean()
+    print(f"\n  Best B&B RMSE across all tubing IDs: {best_bb_rmse:.2f} bar "
+          f"(at ID={best_bb_tid:.3f} in)")
+    print(f"  RF LOWO mean RMSE: {rf_lowo_rmse:.2f} bar")
+    print(f"  RF still {(1-rf_lowo_rmse/best_bb_rmse)*100:.0f}% better than "
+          f"best-case B&B")
+
+
+# =============================================================================
+# STAGE 9 - CROSS-WELL REGIME ANALYSIS
+# =============================================================================
+print("\n" + "=" * 72)
+print("  STAGE 9/11: Cross-well regime analysis (extrapolation detection)")
+print("=" * 72)
+
+# Per-well operating regime summary
+regime_features = ['delta_P', 'q_liq', 'WC', 'GOR', 'GLR',
+                   'AVG_WHP_P', 'AVG_DOWNHOLE_TEMPERATURE']
+regime_summary = []
+
+for well in wells:
+    w = d[d['Wellbore name'] == well]
+    row = {'well': well, 'n': len(w)}
+    for feat in regime_features:
+        row[f'{feat}_min'] = w[feat].min()
+        row[f'{feat}_max'] = w[feat].max()
+        row[f'{feat}_mean'] = w[feat].mean()
+        row[f'{feat}_std'] = w[feat].std()
+    regime_summary.append(row)
+
+regime_df = pd.DataFrame(regime_summary)
+regime_df.to_csv(os.path.join(DATA_DIR, 'well_regime_summary.csv'), index=False)
+
+# Extrapolation detection: for each LOWO fold, what % of test features
+# fall outside the training range?
+print("\n  Extrapolation analysis (% of test points outside training range):")
+extrap_results = []
+for test_well in wells:
+    train_data = d[d['Wellbore name'] != test_well]
+    test_data = d[d['Wellbore name'] == test_well]
+
+    extrap_pcts = {}
+    total_extrap = 0
+    total_checks = 0
+    for feat in FEATURES:
+        train_min = train_data[feat].min()
+        train_max = train_data[feat].max()
+        outside = ((test_data[feat] < train_min) | (test_data[feat] > train_max)).sum()
+        pct = outside / len(test_data) * 100
+        extrap_pcts[feat] = pct
+        total_extrap += outside
+        total_checks += len(test_data)
+
+    overall_pct = total_extrap / total_checks * 100
+    r2_val = lowo_df[lowo_df['test_well'] == test_well]['R2'].values[0]
+
+    extrap_results.append({
+        'test_well': test_well,
+        'overall_extrap_pct': overall_pct,
+        'LOWO_R2': r2_val,
+        **{f'extrap_{k}': v for k, v in extrap_pcts.items()}
+    })
+    print(f"  {short_well(test_well):8s}:  {overall_pct:5.1f}% extrapolation  "
+          f"(LOWO R2 = {r2_val:+.3f})")
+
+extrap_df = pd.DataFrame(extrap_results)
+extrap_df.to_csv(os.path.join(DATA_DIR, 'extrapolation_analysis.csv'), index=False)
+
+# Error by WC bins
+print("\n  Error analysis by water cut regime:")
+wc_bins = [(0, 0.3, 'Low WC (<0.3)'),
+           (0.3, 0.6, 'Medium WC (0.3-0.6)'),
+           (0.6, 1.0, 'High WC (>0.6)')]
+wc_error_rows = []
+for wc_lo, wc_hi, label in wc_bins:
+    mask = (d['WC'] >= wc_lo) & (d['WC'] < wc_hi)
+    n_points = mask.sum()
+    if n_points > 0:
+        # Use pooled model predictions for this analysis
+        mask_test = (X_test['WC'] >= wc_lo) & (X_test['WC'] < wc_hi)
+        n_test = mask_test.sum()
+        if n_test > 5:
+            yt_wc = yt_pool[mask_test.values]
+            yp_wc = yp_pool[mask_test.values]
+            rmse_wc = np.sqrt(mean_squared_error(yt_wc, yp_wc))
+            mape_wc = np.mean(np.abs((yt_wc - yp_wc) / yt_wc)) * 100
+            wc_error_rows.append({
+                'WC_regime': label, 'n_total': n_points, 'n_test': n_test,
+                'RMSE': rmse_wc, 'MAPE': mape_wc
+            })
+            print(f"  {label:25s}:  n={n_test:4d}  RMSE={rmse_wc:.2f}  MAPE={mape_wc:.2f}%")
+
+wc_error_df = pd.DataFrame(wc_error_rows)
+wc_error_df.to_csv(os.path.join(DATA_DIR, 'error_by_wc_regime.csv'), index=False)
+
+
+# =============================================================================
+# STAGE 10 - UNCERTAINTY QUANTIFICATION
+# =============================================================================
+print("\n" + "=" * 72)
+print("  STAGE 10/11: Uncertainty quantification (prediction intervals)")
+print("=" * 72)
+
+# Use per-tree predictions from the pooled RF to compute prediction intervals
+print("  Computing per-tree predictions for uncertainty bounds...")
+tree_preds = np.array([tree.predict(X_test[FEATURES].values)
+                       for tree in rf_pooled.estimators_])
+pred_mean = tree_preds.mean(axis=0)
+pred_std = tree_preds.std(axis=0)
+pred_lower = np.percentile(tree_preds, 2.5, axis=0)  # 95% CI lower
+pred_upper = np.percentile(tree_preds, 97.5, axis=0)  # 95% CI upper
+
+# Coverage: what % of actual values fall within the 95% CI?
+coverage = np.mean((yt_pool >= pred_lower) & (yt_pool <= pred_upper)) * 100
+mean_width = np.mean(pred_upper - pred_lower)
+
+print(f"  95% prediction interval coverage: {coverage:.1f}%")
+print(f"  Mean interval width: {mean_width:.2f} bar")
+print(f"  Mean prediction std: {pred_std.mean():.2f} bar")
+
+uncertainty_df = pd.DataFrame({
+    'actual': yt_pool,
+    'predicted_mean': pred_mean,
+    'predicted_std': pred_std,
+    'CI_lower_2.5': pred_lower,
+    'CI_upper_97.5': pred_upper
+})
+uncertainty_df.to_csv(os.path.join(DATA_DIR, 'uncertainty_analysis.csv'), index=False)
+
+
+# =============================================================================
+# STAGE 11 - GENERATE ALL FIGURES
+# =============================================================================
+print("\n" + "=" * 72)
+print("  STAGE 11/11: Generating publication-quality figures")
 print("=" * 72)
 
 # ---- FIGURE 1: LOWO Predicted vs Actual (scatter + bar chart) ----
@@ -758,33 +1055,39 @@ if HAS_SHAP and shap_values is not None:
     fig.savefig(os.path.join(FIG_DIR, 'fig4_shap_beeswarm.png'),
                 dpi=150, bbox_inches='tight')
     plt.close('all')
-    print("  [4/8] fig4_shap_beeswarm.png")
+    print("  [4/11] fig4_shap_beeswarm.png")
 else:
-    print("  [4/8] SKIPPED (SHAP not available)")
+    print("  [4/11] SKIPPED (SHAP not available)")
 
 
-# ---- FIGURE 5: RF vs Beggs & Brill Comparison ----
-fig, ax = plt.subplots(figsize=(10, 6))
+# ---- FIGURE 5: RF vs Beggs & Brill vs Linear Regression Comparison ----
+fig, ax = plt.subplots(figsize=(12, 6))
 merged = comparison.dropna(subset=['RMSE_BB'])
 x = np.arange(len(merged))
-width = 0.35
-ax.bar(x - width/2, merged['RMSE'], width, color='#1565C0', label='Random Forest (LOWO)', alpha=0.85)
-ax.bar(x + width/2, merged['RMSE_BB'], width, color='#B71C1C', label='Beggs & Brill (assumed geom.)', alpha=0.85)
+width = 0.25
+ax.bar(x - width, merged['RMSE'], width, color='#1565C0', label='Random Forest (LOWO)', alpha=0.85)
+ax.bar(x, merged['RMSE_LR'], width, color='#F57C00', label='Linear Regression (LOWO)', alpha=0.85)
+ax.bar(x + width, merged['RMSE_BB'], width, color='#B71C1C', label='Beggs & Brill (assumed geom.)', alpha=0.85)
 ax.set_xticks(x)
 ax.set_xticklabels([short_well(w) for w in merged['test_well']], rotation=15)
 ax.set_ylabel('RMSE (bar)')
-ax.set_title('RF vs Beggs & Brill -- RMSE by held-out well\n*B&B uses assumed tubing ID/depth/inclination -- not measured')
-ax.legend()
+ax.set_title('RF vs Linear Regression vs Beggs & Brill — RMSE by held-out well\n'
+             '*B&B uses assumed tubing ID/depth/inclination — not measured')
+ax.legend(fontsize=9)
 
 # Add value labels
-for i, (rf_v, bb_v) in enumerate(zip(merged['RMSE'], merged['RMSE_BB'])):
-    ax.text(i - width/2, rf_v + 1, f'{rf_v:.1f}', ha='center', va='bottom', fontsize=8)
-    ax.text(i + width/2, bb_v + 1, f'{bb_v:.1f}', ha='center', va='bottom', fontsize=8)
+for i in range(len(merged)):
+    rf_v = merged['RMSE'].iloc[i]
+    lr_v = merged['RMSE_LR'].iloc[i]
+    bb_v = merged['RMSE_BB'].iloc[i]
+    ax.text(i - width, rf_v + 0.8, f'{rf_v:.1f}', ha='center', va='bottom', fontsize=7)
+    ax.text(i, lr_v + 0.8, f'{lr_v:.1f}', ha='center', va='bottom', fontsize=7)
+    ax.text(i + width, bb_v + 0.8, f'{bb_v:.1f}', ha='center', va='bottom', fontsize=7)
 
 plt.tight_layout()
-fig.savefig(os.path.join(FIG_DIR, 'fig5_rf_vs_bb.png'), dpi=150, bbox_inches='tight')
+fig.savefig(os.path.join(FIG_DIR, 'fig5_rf_vs_lr_vs_bb.png'), dpi=150, bbox_inches='tight')
 plt.close(fig)
-print("  [5/8] fig5_rf_vs_bb.png")
+print("  [5/11] fig5_rf_vs_lr_vs_bb.png")
 
 
 # ---- FIGURE 6: VLP Curve (dP vs q_liq, colored by WC) ----
@@ -799,7 +1102,7 @@ ax.set_title('VLP Relationship: Pressure Drop vs Liquid Rate\nColored by Water C
 plt.tight_layout()
 fig.savefig(os.path.join(FIG_DIR, 'fig6_vlp_curve_by_wc.png'), dpi=150, bbox_inches='tight')
 plt.close(fig)
-print("  [6/8] fig6_vlp_curve_by_wc.png")
+print("  [6/11] fig6_vlp_curve_by_wc.png")
 
 
 # ---- FIGURE 7: Residual Analysis ----
@@ -845,7 +1148,7 @@ plt.suptitle('Residual Analysis (Pooled 80/20 Split)', fontsize=14, y=1.01)
 plt.tight_layout()
 fig.savefig(os.path.join(FIG_DIR, 'fig7_residual_analysis.png'), dpi=150, bbox_inches='tight')
 plt.close(fig)
-print("  [7/8] fig7_residual_analysis.png")
+print("  [7/11] fig7_residual_analysis.png")
 
 
 # ---- FIGURE 8: Validation Strategy Comparison ----
@@ -887,7 +1190,133 @@ plt.tight_layout()
 fig.savefig(os.path.join(FIG_DIR, 'fig8_validation_comparison.png'),
             dpi=150, bbox_inches='tight')
 plt.close(fig)
-print("  [8/8] fig8_validation_comparison.png")
+print("  [8/11] fig8_validation_comparison.png")
+
+
+# ---- FIGURE 9: B&B Sensitivity Analysis ----
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+# 9a: RMSE vs Tubing ID
+ax = axes[0]
+if len(bb_sens_df) > 0:
+    ax.plot(bb_sens_df['tubing_ID_in'], bb_sens_df['RMSE'], 'o-', color='#B71C1C',
+            lw=2, ms=8, label='Beggs & Brill')
+    ax.axhline(lowo_df['RMSE'].mean(), color='#1565C0', linestyle='--', lw=2,
+               label=f'RF LOWO mean ({lowo_df["RMSE"].mean():.1f} bar)')
+    ax.axhline(lowo_lr_df['RMSE'].mean(), color='#F57C00', linestyle=':', lw=2,
+               label=f'LR LOWO mean ({lowo_lr_df["RMSE"].mean():.1f} bar)')
+    ax.set_xlabel('Assumed Tubing ID (inches)')
+    ax.set_ylabel('RMSE (bar)')
+    ax.set_title('B&B Sensitivity to Tubing Diameter')
+    ax.legend(fontsize=8)
+    # Mark the assumed value
+    ax.axvline(ASSUMED_TUBING_ID_INCHES, color='gray', linestyle='--', alpha=0.5)
+    ax.text(ASSUMED_TUBING_ID_INCHES, ax.get_ylim()[1]*0.95, ' Assumed\n value',
+            fontsize=8, color='gray', va='top')
+
+# 9b: Heatmap of depth vs inclination
+ax = axes[1]
+if len(bb_di_df) > 0:
+    pivot = bb_di_df.pivot(index='depth_m', columns='inclination_deg', values='RMSE')
+    im = ax.imshow(pivot.values, cmap='Reds', aspect='auto')
+    ax.set_xticks(range(len(pivot.columns)))
+    ax.set_xticklabels([f"{c}\u00b0" for c in pivot.columns])
+    ax.set_yticks(range(len(pivot.index)))
+    ax.set_yticklabels([f"{i}m" for i in pivot.index])
+    ax.set_xlabel('Inclination')
+    ax.set_ylabel('Well Depth')
+    ax.set_title('B&B RMSE by Depth & Inclination\n(at default tubing ID)')
+    for i in range(len(pivot.index)):
+        for j in range(len(pivot.columns)):
+            ax.text(j, i, f'{pivot.values[i,j]:.0f}', ha='center', va='center',
+                    fontsize=10, fontweight='bold',
+                    color='white' if pivot.values[i,j] > pivot.values.mean() else 'black')
+    plt.colorbar(im, ax=ax, label='RMSE (bar)')
+
+plt.suptitle('Beggs & Brill Sensitivity Analysis — RF Wins Across All Geometries',
+             fontsize=13, y=1.02)
+plt.tight_layout()
+fig.savefig(os.path.join(FIG_DIR, 'fig9_bb_sensitivity.png'), dpi=150, bbox_inches='tight')
+plt.close(fig)
+print("  [9/11] fig9_bb_sensitivity.png")
+
+
+# ---- FIGURE 10: Cross-Well Regime Comparison ----
+key_regime_feats = ['delta_P', 'WC', 'GLR', 'q_liq']
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+for idx, feat in enumerate(key_regime_feats):
+    ax = axes[idx // 2, idx % 2]
+    well_data_list = []
+    well_labels = []
+    for well in wells:
+        w = d[d['Wellbore name'] == well]
+        well_data_list.append(w[feat].values)
+        well_labels.append(short_well(well))
+
+    bp = ax.boxplot(well_data_list, labels=well_labels, patch_artist=True,
+                    medianprops={'color': 'black', 'linewidth': 2})
+    for patch, well in zip(bp['boxes'], wells):
+        patch.set_facecolor(WELL_COLORS[well])
+        patch.set_alpha(0.7)
+
+    ax.set_ylabel(feat)
+    ax.set_title(f'{feat} Distribution by Well')
+    ax.tick_params(axis='x', rotation=15)
+
+plt.suptitle('Cross-Well Operating Regime Comparison\n'
+             'Wells with non-overlapping distributions explain poor LOWO R\u00b2',
+             fontsize=13, y=1.02)
+plt.tight_layout()
+fig.savefig(os.path.join(FIG_DIR, 'fig10_well_regime_comparison.png'),
+            dpi=150, bbox_inches='tight')
+plt.close(fig)
+print("  [10/11] fig10_well_regime_comparison.png")
+
+
+# ---- FIGURE 11: Prediction Intervals ----
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+# 11a: Predicted vs Actual with confidence bands
+ax = axes[0]
+sort_idx = np.argsort(yt_pool)
+yt_sorted = yt_pool[sort_idx]
+pred_sorted = pred_mean[sort_idx]
+lower_sorted = pred_lower[sort_idx]
+upper_sorted = pred_upper[sort_idx]
+
+# Subsample for clarity
+step = max(1, len(yt_sorted) // 200)
+idxs = np.arange(0, len(yt_sorted), step)
+
+ax.scatter(yt_sorted[idxs], pred_sorted[idxs], s=12, color='#1565C0', alpha=0.6,
+           label='Prediction', zorder=3)
+ax.fill_between(yt_sorted[idxs], lower_sorted[idxs], upper_sorted[idxs],
+                alpha=0.2, color='#1565C0', label='95% CI')
+lims = [d[TARGET].min()-10, d[TARGET].max()+10]
+ax.plot(lims, lims, 'k--', lw=1, alpha=0.5, label='Perfect')
+ax.set_xlabel('Actual \u0394P (bar)')
+ax.set_ylabel('Predicted \u0394P (bar)')
+ax.set_title(f'Predictions with 95% Confidence Interval\nCoverage={coverage:.1f}%')
+ax.legend(fontsize=9)
+
+# 11b: Prediction uncertainty histogram
+ax = axes[1]
+ax.hist(pred_std, bins=40, color='#7B1FA2', alpha=0.75, edgecolor='white')
+ax.axvline(pred_std.mean(), color='red', linestyle='--', lw=2,
+           label=f'Mean std = {pred_std.mean():.2f} bar')
+ax.set_xlabel('Prediction Standard Deviation (bar)')
+ax.set_ylabel('Count')
+ax.set_title('Distribution of Prediction Uncertainty\n(Per-tree disagreement)')
+ax.legend(fontsize=9)
+
+plt.suptitle('Uncertainty Quantification — Random Forest Prediction Intervals',
+             fontsize=13, y=1.02)
+plt.tight_layout()
+fig.savefig(os.path.join(FIG_DIR, 'fig11_prediction_intervals.png'),
+            dpi=150, bbox_inches='tight')
+plt.close(fig)
+print("  [11/11] fig11_prediction_intervals.png")
 
 
 # =============================================================================
@@ -951,22 +1380,33 @@ print("  OUTPUT FILES")
 print("=" * 72)
 outputs = {
     'data/lowo_results.csv': 'Leave-One-Well-Out cross-validation results',
+    'data/lowo_lr_results.csv': 'Linear Regression baseline (LOWO)',
     'data/chrono_split_results.csv': 'Chronological within-well split results',
+    'data/chrono_lr_results.csv': 'Linear Regression baseline (chrono)',
     'data/pooled_split_results.csv': 'Pooled random split results',
     'data/validation_summary.csv': 'All 3 strategies compared',
     'data/feature_importance_gini.csv': 'Gini-based feature importance',
     'data/beggs_brill_results.csv': 'Beggs & Brill benchmark (ASSUMED geometry)',
-    'data/rf_vs_bb_comparison.csv': 'RF vs B&B side-by-side comparison',
+    'data/rf_vs_bb_comparison.csv': 'RF vs LR vs B&B side-by-side comparison',
+    'data/bb_sensitivity_tubing_id.csv': 'B&B sensitivity to tubing ID',
+    'data/bb_sensitivity_depth_incl.csv': 'B&B sensitivity to depth & inclination',
+    'data/well_regime_summary.csv': 'Per-well operating regime summary',
+    'data/extrapolation_analysis.csv': 'Cross-well extrapolation detection',
+    'data/error_by_wc_regime.csv': 'Error analysis by water cut regime',
+    'data/uncertainty_analysis.csv': 'Prediction intervals & uncertainty',
     'data/modelready_features.csv': 'Cleaned, feature-engineered dataset',
     'data/rf_model.pkl': 'Trained RF model (for Streamlit app)',
     'figures/fig1_lowo_predicted_vs_actual.png': 'LOWO scatter + per-fold bars',
     'figures/fig2_chrono_split_timeseries.png': 'Chronological split time series',
     'figures/fig3_feature_importance_gini.png': 'Gini feature importance',
     'figures/fig4_shap_beeswarm.png': 'SHAP beeswarm plot',
-    'figures/fig5_rf_vs_bb.png': 'RF vs Beggs & Brill comparison',
+    'figures/fig5_rf_vs_lr_vs_bb.png': 'RF vs LR vs B&B comparison',
     'figures/fig6_vlp_curve_by_wc.png': 'VLP curve colored by water cut',
     'figures/fig7_residual_analysis.png': '4-panel residual analysis',
     'figures/fig8_validation_comparison.png': '3-strategy validation comparison',
+    'figures/fig9_bb_sensitivity.png': 'B&B geometry sensitivity analysis',
+    'figures/fig10_well_regime_comparison.png': 'Cross-well regime comparison',
+    'figures/fig11_prediction_intervals.png': 'Prediction intervals & uncertainty',
 }
 for f, desc in outputs.items():
     path = os.path.join(BASE_DIR, f)

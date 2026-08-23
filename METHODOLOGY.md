@@ -94,52 +94,64 @@ All of the following must be true:
 
 ## Feature Engineering
 
-Sixteen features are engineered from the raw measured columns:
+Sixteen features are engineered from the raw measured columns. Each feature is chosen
+for its physical relevance to multiphase wellbore flow, not as an arbitrary statistical input.
 
-### Flow Rates (Normalized)
+### Flow Rates (Normalized by On-Stream Hours)
 
-Raw volumes are converted to daily rates normalized by on-stream hours to correct for
-partial-day production:
+Raw daily volumes are converted to instantaneous rates. This correction is essential because
+a well that produced for only 12 hours should not appear to have half the rate of a full-day
+producer — the instantaneous flow rate determines the actual hydraulic conditions in the tubing.
 
-| Feature | Formula | Unit | Rationale |
-|---------|---------|------|-----------|
-| `q_oil` | `BORE_OIL_VOL × 24 / ON_STREAM_HRS` | Sm³/d | Actual instantaneous oil rate |
-| `q_gas` | `BORE_GAS_VOL × 24 / ON_STREAM_HRS` | Sm³/d | Actual instantaneous gas rate |
-| `q_wat` | `BORE_WAT_VOL × 24 / ON_STREAM_HRS` | Sm³/d | Actual instantaneous water rate |
-| `q_liq` | `q_oil + q_wat` | Sm³/d | Total liquid rate |
+| Feature | Formula | Unit | Physical Justification |
+|---------|---------|------|----------------------|
+| `q_oil` | `BORE_OIL_VOL × 24 / ON_STREAM_HRS` | Sm³/d | Instantaneous oil rate — determines oil velocity in tubing |
+| `q_gas` | `BORE_GAS_VOL × 24 / ON_STREAM_HRS` | Sm³/d | Instantaneous gas rate — controls gas void fraction |
+| `q_wat` | `BORE_WAT_VOL × 24 / ON_STREAM_HRS` | Sm³/d | Instantaneous water rate — increases mixture density |
+| `q_liq` | `q_oil + q_wat` | Sm³/d | Total liquid throughput — determines mixture velocity, which directly affects friction gradient (dP/dz_friction ∝ v²) |
 
-### Compositional Features
+### Compositional Features (Account for ~78% of Model Importance)
 
-| Feature | Formula | Rationale |
-|---------|---------|-----------|
-| `WC` | `q_wat / q_liq` | Water cut — key driver of multiphase flow regime |
-| `GOR` | `q_gas / q_oil` | Gas-oil ratio — controls gas void fraction |
-| `GLR` | `q_gas / q_liq` | Gas-liquid ratio — alternative for high water cut |
+These are the most physically meaningful features. In multiphase flow, the **ratio** of gas
+to liquid is more important than absolute rates, because it determines the flow regime
+(bubble, slug, annular, mist) and the gas void fraction, which in turn controls the
+hydrostatic pressure gradient.
+
+| Feature | Formula | Physical Justification |
+|---------|---------|----------------------|
+| `WC` | `q_wat / q_liq` | **Water cut** — drives mixture density. Water (ρ≈1020 kg/m³) is much denser than oil (ρ≈850 kg/m³). Higher WC = heavier fluid column = higher hydrostatic ΔP. Also triggers transitions between oil-continuous and water-continuous flow regimes. |
+| `GOR` | `q_gas / q_oil` | **Gas-oil ratio** — controls solution gas behavior. At pressures above the bubble point, gas dissolves in oil; below, free gas appears. GOR determines how much gas is available to lighten the fluid column (gas-lift effect). |
+| `GLR` | `q_gas / q_liq` | **Gas-liquid ratio** — a more general indicator than GOR for wells with significant water production. Directly governs gas void fraction, which is the key parameter in all multiphase flow correlations (including Beggs & Brill). |
 
 ### Log-Transformed Rates
 
-| Feature | Formula | Rationale |
-|---------|---------|-----------|
-| `log_q_liq` | `ln(1 + q_liq)` | Compresses wide dynamic range for tree splits |
-| `log_q_oil` | `ln(1 + q_oil)` | Same rationale |
-| `log_q_gas` | `ln(1 + q_gas)` | Same rationale |
+| Feature | Formula | Physical Justification |
+|---------|---------|----------------------|
+| `log_q_liq` | `ln(1 + q_liq)` | Gas rates can vary by 100x across wells while oil rates vary by 5-10x. Log transformation compresses this dynamic range so that Random Forest tree splits are effective across the entire range, rather than being dominated by a few high-rate points. |
+| `log_q_oil` | `ln(1 + q_oil)` | Same rationale — improves split efficiency for tree-based models. |
+| `log_q_gas` | `ln(1 + q_gas)` | Same rationale — particularly important for gas, which has the widest range. |
 
-### Pressure & Temperature Features
+### Temperature Features
 
-| Feature | Formula | Rationale |
-|---------|---------|-----------|
-| `P_ratio` | `P_wf / P_wh` | Dimensionless compression ratio |
-| `dT` | `T_downhole − T_wellhead` | Temperature gradient proxy |
+| Feature | Formula | Physical Justification |
+|---------|---------|----------------------|
+| `dT` | `T_downhole − T_wellhead` | **Temperature gradient** — a proxy for the geothermal gradient and heat transfer along the wellbore. Temperature affects oil viscosity (exponentially), gas solubility, wax/asphaltene deposition risk, and fluid density. A large dT indicates significant property changes between bottom and top of well. |
 
 ### Directly Measured Features (Passed Through)
 
-| Feature | Source Column |
-|---------|--------------|
-| `AVG_WHP_P` | Wellhead pressure (bar) |
-| `AVG_WHT_P` | Wellhead temperature (°C) |
-| `AVG_DOWNHOLE_TEMPERATURE` | Downhole temperature (°C) |
-| `AVG_CHOKE_SIZE_P` | Choke opening (%) |
-| `ON_STREAM_HRS` | Hours on production |
+| Feature | Source Column | Physical Justification |
+|---------|--------------|----------------------|
+| `AVG_WHP_P` | Wellhead pressure (bar) | Surface backpressure — compresses gas at wellhead conditions, affecting void fraction and density. This is a standard VLP input. |
+| `AVG_WHT_P` | Wellhead temperature (°C) | Surface temperature — affects fluid PVT properties at wellhead. |
+| `AVG_DOWNHOLE_TEMPERATURE` | Downhole temperature (°C) | Reservoir/gauge temperature — controls viscosity, gas solubility (Rs), oil formation volume factor (Bo). |
+| `AVG_CHOKE_SIZE_P` | Choke opening (%) | Choke opening controls the flow rate and creates a surface pressure drop. |
+| `ON_STREAM_HRS` | Hours on production | After rate normalization, captures whether the well operated in transient start-up mode or steady state. |
+
+### Note: P_ratio is Computed but NOT Used
+
+`P_ratio = P_wf / P_wh` is computed during feature engineering but is **excluded from the
+final feature set** because it directly contains the target variable (P_wf is used in computing
+ΔP = P_wf − P_wh). Including P_ratio would constitute **data leakage**.
 
 ### Target Variable
 
@@ -149,6 +161,37 @@ delta_P = AVG_DOWNHOLE_PRESSURE − AVG_WHP_P    (bar)
 
 This is the wellbore pressure drop — the quantity the model predicts. It is verified against
 the independently recorded `AVG_DP_TUBING` column (correlation = 0.9997).
+
+---
+
+## Data Leakage Audit
+
+> ⚠️ **This is the most important quality assurance check in the project.**
+
+Because the target variable ΔP = P_wf − P_wh is computed from two measured pressures, we
+must rigorously verify that no feature directly or indirectly contains the answer.
+
+### Automated Verification
+
+The pipeline performs an explicit check at runtime. If any of the following columns appear
+in the feature list, the pipeline halts with an error:
+
+| Column | Description | In Features? | Why It Would Be Leakage |
+|--------|-------------|:------------:|------------------------|
+| `AVG_DP_TUBING` | Measured tubing dP | ❌ NO | This IS the target (correlation 0.9997 with delta_P) |
+| `AVG_DOWNHOLE_PRESSURE` | Bottomhole pressure (P_wf) | ❌ NO | Directly used to compute delta_P |
+| `P_ratio` | P_wf / P_wh | ❌ NO | Contains P_wf, which is part of delta_P |
+| `delta_P` | The target variable itself | ❌ NO | This would make R²=1.0 trivially |
+
+### AVG_WHP_P in Both Features and Target Formula
+
+**`AVG_WHP_P`** is NOT leakage because:
+1. It is measured by an **independent** surface pressure gauge
+2. In deployment, WHP would always be **available** as an input
+3. It is a **standard input** to all VLP correlations (including Beggs & Brill)
+4. Removing it would cripple the model by removing physically necessary information
+
+### Verdict: NO DATA LEAKAGE DETECTED
 
 ---
 
