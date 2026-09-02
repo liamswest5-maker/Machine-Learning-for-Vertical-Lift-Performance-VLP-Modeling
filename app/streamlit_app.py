@@ -125,12 +125,15 @@ def train_model_from_data(data_path):
     }
 
 
-def predict_single(model_data, inputs):
-    """Make a single prediction from user inputs."""
+def predict_with_uncertainty(model_data, inputs):
+    """
+    Predict ΔP and return uncertainty (std across trees).
+    Returns: (mean_prediction, std_deviation)
+    """
     model = model_data['model']
     features = model_data['features']
 
-    # Build feature vector
+    # Build feature vector (same logic as predict_single)
     row = {}
     for f in features:
         if f in inputs:
@@ -152,20 +155,31 @@ def predict_single(model_data, inputs):
         elif f == 'log_q_gas':
             row[f] = np.log1p(inputs.get('q_gas', 0))
         elif f == 'dT':
-            row[f] = inputs.get('AVG_DOWNHOLE_TEMPERATURE', 100) - inputs.get('AVG_WHT_P', 60)
+            row[f] = inputs.get('AVG_DOWNHOLE_TEMPERATURE', 0) - inputs.get('AVG_WHT_P', 0)
         else:
-            row[f] = 0
+            row[f] = 0  # fallback
 
     X = pd.DataFrame([row])[features]
-    prediction = model.predict(X)[0]
-    return prediction
 
+    # Get predictions from every tree
+    tree_preds = np.array([tree.predict(X)[0] for tree in model.estimators_])
+    
+    mean_pred = tree_preds.mean()
+    std_pred = tree_preds.std()
+
+    return mean_pred, std_pred
 
 def generate_vlp_curve(model_data, base_inputs, q_range):
-    """Generate a VLP curve by varying liquid rate."""
-    predictions = []
+    """
+    Generate a VLP curve by varying liquid rate.
+    Returns: mean predictions and uncertainty (std) for each rate.
+    """
+    means = []
+    stds = []
+
     for q in q_range:
         inputs = base_inputs.copy()
+
         # Scale oil and water proportionally
         total_liq = inputs.get('q_oil', 0) + inputs.get('q_wat', 0)
         if total_liq > 0:
@@ -176,14 +190,15 @@ def generate_vlp_curve(model_data, base_inputs, q_range):
             inputs['q_oil'] = q
             inputs['q_wat'] = 0
 
-        # Scale gas proportionally
-        gor = inputs.get('q_gas', 0) / max(base_inputs.get('q_oil', 1), 1e-6)
+        # Scale gas to keep GOR constant
+        gor = base_inputs.get('q_gas', 0) / max(base_inputs.get('q_oil', 1), 1e-6)
         inputs['q_gas'] = inputs['q_oil'] * gor
 
-        dp = predict_single(model_data, inputs)
-        predictions.append(dp)
+        mean_dp, std_dp = predict_with_uncertainty(model_data, inputs)
+        means.append(mean_dp)
+        stds.append(std_dp)
 
-    return predictions
+    return np.array(means), np.array(stds)
 
 
 # =====================================================================
