@@ -473,14 +473,16 @@ elif page == "📈 VLP Curve Generator":
         default=[0.1, 0.3, 0.5, 0.7]
     )
 
-    if st.button("📈 Generate VLP Curves", type="primary", use_container_width=True):
-        q_range = np.linspace(q_min, q_max, 50)
+      if st.button("📈 Generate VLP Curves", type="primary", use_container_width=True):
+        q_range = np.linspace(q_min, q_max, 40)
 
-        fig, ax = plt.subplots(figsize=(10, 7))
+        fig, ax = plt.subplots(figsize=(11, 7))
         colors = plt.cm.RdYlBu_r(np.linspace(0.15, 0.85, len(wc_scenarios)))
 
         for wc_val, color in zip(wc_scenarios, colors):
-            dP_values = []
+            means = []
+            stds = []
+
             for q in q_range:
                 q_oil_i = q * (1 - wc_val)
                 q_wat_i = q * wc_val
@@ -488,19 +490,34 @@ elif page == "📈 VLP Curve Generator":
                 q_gas_i = q_oil_i * gor
 
                 inputs = {
-                    'q_oil': q_oil_i, 'q_gas': q_gas_i, 'q_wat': q_wat_i,
-                    'AVG_WHP_P': base_whp, 'AVG_WHT_P': base_wht,
+                    'q_oil': q_oil_i,
+                    'q_gas': q_gas_i,
+                    'q_wat': q_wat_i,
+                    'AVG_WHP_P': base_whp,
+                    'AVG_WHT_P': base_wht,
                     'AVG_DOWNHOLE_TEMPERATURE': base_dht,
-                    'AVG_CHOKE_SIZE_P': base_choke, 'ON_STREAM_HRS': 24.0,
+                    'AVG_CHOKE_SIZE_P': base_choke,
+                    'ON_STREAM_HRS': 24.0,
                 }
-                dP_values.append(predict_single(model_data, inputs))
 
-            ax.plot(q_range, dP_values, '-', color=color, lw=2.5,
-                    label=f'WC = {wc_val:.0%}', alpha=0.85)
+                mean_dp, std_dp = predict_with_uncertainty(model_data, inputs)
+                means.append(mean_dp)
+                stds.append(std_dp)
+
+            means = np.array(means)
+            stds = np.array(stds)
+
+            # Plot mean curve
+            ax.plot(q_range, means, '-', color=color, lw=2.5,
+                    label=f'WC = {wc_val:.0%}', alpha=0.9)
+
+            # Plot uncertainty band (±1 std)
+            ax.fill_between(q_range, means - stds, means + stds,
+                            color=color, alpha=0.18)
 
         ax.set_xlabel('Liquid Flow Rate (Sm³/d)', fontsize=12)
         ax.set_ylabel('Wellbore Pressure Drop, ΔP (bar)', fontsize=12)
-        ax.set_title('VLP Curves at Different Water Cuts', fontsize=14)
+        ax.set_title('VLP Curves at Different Water Cuts\n(with Uncertainty Bands)', fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -508,13 +525,12 @@ elif page == "📈 VLP Curve Generator":
         plt.close(fig)
 
         st.markdown("""
-        **Interpretation:** As water cut increases, the pressure drop increases because:
-        - Water is denser than oil → higher hydrostatic head
-        - Higher mixture density increases the gravity pressure gradient
-        - This is the central finding of the project: WC is the dominant VLP driver
+        **Interpretation:**  
+        - As water cut increases, the pressure drop (ΔP) increases because water is denser than oil, raising the hydrostatic gradient.  
+        - The shaded bands represent model uncertainty (±1 standard deviation across the Random Forest trees).  
+        - Narrower bands indicate higher model confidence; wider bands show greater uncertainty in that operating region.  
+        - This makes the tool more useful for engineering decision-making by showing both the predicted VLP and its reliability.
         """)
-
-
 # =====================================================================
 # PAGE: MODEL PERFORMANCE
 # =====================================================================
