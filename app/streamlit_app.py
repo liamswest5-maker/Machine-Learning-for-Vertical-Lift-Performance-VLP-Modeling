@@ -124,12 +124,14 @@ def train_model_from_data(data_path):
         },
     }
 
-def predict_single(model_data, inputs):
-    """Make a single prediction from user inputs."""
+def predict_with_uncertainty(model_data, inputs):
+    """
+    Predict ΔP and return uncertainty (std across trees).
+    Returns: (mean_prediction, std_deviation)
+    """
     model = model_data['model']
     features = model_data['features']
 
-    # Build feature vector
     row = {}
     for f in features:
         if f in inputs:
@@ -151,19 +153,31 @@ def predict_single(model_data, inputs):
         elif f == 'log_q_gas':
             row[f] = np.log1p(inputs.get('q_gas', 0))
         elif f == 'dT':
-            row[f] = inputs.get('AVG_DOWNHOLE_TEMPERATURE', 100) - inputs.get('AVG_WHT_P', 60)
+            row[f] = inputs.get('AVG_DOWNHOLE_TEMPERATURE', 0) - inputs.get('AVG_WHT_P', 0)
         else:
             row[f] = 0
 
     X = pd.DataFrame([row])[features]
-    prediction = model.predict(X)[0]
-    return prediction
+
+    # Get predictions from every tree
+    tree_preds = np.array([tree.predict(X)[0] for tree in model.estimators_])
+    
+    mean_pred = tree_preds.mean()
+    std_pred = tree_preds.std()
+
+    return mean_pred, std_pred
 
 def generate_vlp_curve(model_data, base_inputs, q_range):
-    """Generate a VLP curve by varying liquid rate."""
-    predictions = []
+    """
+    Generate a VLP curve by varying liquid rate.
+    Returns: mean predictions and uncertainty (std) for each rate.
+    """
+    means = []
+    stds = []
+
     for q in q_range:
         inputs = base_inputs.copy()
+
         # Scale oil and water proportionally
         total_liq = inputs.get('q_oil', 0) + inputs.get('q_wat', 0)
         if total_liq > 0:
@@ -174,16 +188,15 @@ def generate_vlp_curve(model_data, base_inputs, q_range):
             inputs['q_oil'] = q
             inputs['q_wat'] = 0
 
-        # Scale gas proportionally
-        gor = inputs.get('q_gas', 0) / max(base_inputs.get('q_oil', 1), 1e-6)
+        # Scale gas to keep GOR constant
+        gor = base_inputs.get('q_gas', 0) / max(base_inputs.get('q_oil', 1), 1e-6)
         inputs['q_gas'] = inputs['q_oil'] * gor
 
-        dp = predict_single(model_data, inputs)
-        predictions.append(dp)
+        mean_dp, std_dp = predict_with_uncertainty(model_data, inputs)
+        means.append(mean_dp)
+        stds.append(std_dp)
 
-    return predictions
-
-
+    return np.array(means), np.array(stds)
 
 # =====================================================================
 # FIND DATA FILES
@@ -434,15 +447,12 @@ elif page == "📈 VLP Curve Generator":
         base_q_oil = st.number_input("Base Oil Rate (Sm³/d)", value=1000.0, step=100.0)
         base_q_gas = st.number_input("Base Gas Rate (Sm³/d)", value=150000.0, step=5000.0)
         base_q_wat = st.number_input("Base Water Rate (Sm³/d)", value=500.0, step=100.0)
-        base_whp = st.number_input("Wellhead Pressure (bar)", value=50.0, step=5.0,
-                                    key="vlp_whp")
+        base_whp = st.number_input("Wellhead Pressure (bar)", value=50.0, step=5.0, key="vlp_whp")
 
     with col2:
         st.markdown("#### Conditions & Range")
-        base_wht = st.number_input("Wellhead Temperature (°C)", value=70.0, step=5.0,
-                                    key="vlp_wht")
-        base_dht = st.number_input("Downhole Temperature (°C)", value=106.0, step=5.0,
-                                    key="vlp_dht")
+        base_wht = st.number_input("Wellhead Temperature (°C)", value=70.0, step=5.0, key="vlp_wht")
+        base_dht = st.number_input("Downhole Temperature (°C)", value=106.0, step=5.0, key="vlp_dht")
         base_choke = st.number_input("Choke Size (%)", value=50.0, step=5.0, key="vlp_choke")
         q_min = st.number_input("Min Liquid Rate (Sm³/d)", value=100.0, step=50.0)
         q_max = st.number_input("Max Liquid Rate (Sm³/d)", value=8000.0, step=500.0)
@@ -457,14 +467,16 @@ elif page == "📈 VLP Curve Generator":
         default=[0.1, 0.3, 0.5, 0.7]
     )
 
-     if st.button("📈 Generate VLP Curves", type="primary", use_container_width=True):
-        q_range = np.linspace(q_min, q_max, 50)
+    if st.button("📈 Generate VLP Curves", type="primary", use_container_width=True):
+        q_range = np.linspace(q_min, q_max, 40)
 
-        fig, ax = plt.subplots(figsize=(10, 7))
+        fig, ax = plt.subplots(figsize=(11, 7))
         colors = plt.cm.RdYlBu_r(np.linspace(0.15, 0.85, len(wc_scenarios)))
 
         for wc_val, color in zip(wc_scenarios, colors):
-            dP_values = []
+            means = []
+            stds = []
+
             for q in q_range:
                 q_oil_i = q * (1 - wc_val)
                 q_wat_i = q * wc_val
@@ -472,19 +484,34 @@ elif page == "📈 VLP Curve Generator":
                 q_gas_i = q_oil_i * gor
 
                 inputs = {
-                    'q_oil': q_oil_i, 'q_gas': q_gas_i, 'q_wat': q_wat_i,
-                    'AVG_WHP_P': base_whp, 'AVG_WHT_P': base_wht,
+                    'q_oil': q_oil_i,
+                    'q_gas': q_gas_i,
+                    'q_wat': q_wat_i,
+                    'AVG_WHP_P': base_whp,
+                    'AVG_WHT_P': base_wht,
                     'AVG_DOWNHOLE_TEMPERATURE': base_dht,
-                    'AVG_CHOKE_SIZE_P': base_choke, 'ON_STREAM_HRS': 24.0,
+                    'AVG_CHOKE_SIZE_P': base_choke,
+                    'ON_STREAM_HRS': 24.0,
                 }
-                dP_values.append(predict_single(model_data, inputs))
 
-            ax.plot(q_range, dP_values, '-', color=color, lw=2.5,
-                    label=f'WC = {wc_val:.0%}', alpha=0.85)
+                mean_dp, std_dp = predict_with_uncertainty(model_data, inputs)
+                means.append(mean_dp)
+                stds.append(std_dp)
+
+            means = np.array(means)
+            stds = np.array(stds)
+
+            # Plot mean curve
+            ax.plot(q_range, means, '-', color=color, lw=2.5,
+                    label=f'WC = {wc_val:.0%}', alpha=0.9)
+
+            # Plot uncertainty band (±1 std)
+            ax.fill_between(q_range, means - stds, means + stds,
+                            color=color, alpha=0.18)
 
         ax.set_xlabel('Liquid Flow Rate (Sm³/d)', fontsize=12)
         ax.set_ylabel('Wellbore Pressure Drop, ΔP (bar)', fontsize=12)
-        ax.set_title('VLP Curves at Different Water Cuts', fontsize=14)
+        ax.set_title('VLP Curves at Different Water Cuts\n(with Uncertainty Bands)', fontsize=14)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -492,10 +519,11 @@ elif page == "📈 VLP Curve Generator":
         plt.close(fig)
 
         st.markdown("""
-        **Interpretation:** As water cut increases, the pressure drop increases because:
-        - Water is denser than oil → higher hydrostatic head
-        - Higher mixture density increases the gravity pressure gradient
-        - This is the central finding of the project: WC is the dominant VLP driver
+        **Interpretation:**  
+        - As water cut increases, the pressure drop (ΔP) increases because water is denser than oil, raising the hydrostatic gradient.  
+        - The shaded bands represent model uncertainty (±1 standard deviation across the Random Forest trees).  
+        - Narrower bands indicate higher model confidence; wider bands show greater uncertainty in that operating region.  
+        - This makes the tool more useful for engineering decision-making by showing both the predicted VLP and its reliability.
         """)
 
 # =====================================================================
