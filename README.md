@@ -1,4 +1,4 @@
-# 🛢️ Development of a Random Forest-Based VLP Model for Multiphase Wellbore Flow Prediction
+# 🛢️ Application of a Random Forest-Based VLP Model for Multiphase Wellbore Flow Prediction
 
 > A data-driven Vertical Lift Performance (VLP) model that predicts wellbore pressure drop
 > using Random Forest regression, trained on real Volve field production data, benchmarked
