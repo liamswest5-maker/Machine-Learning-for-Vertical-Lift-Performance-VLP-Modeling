@@ -1,7 +1,7 @@
 """
 Physics-Informed Hybrid Random Forest VLP Pipeline
 ==================================================
-Matches the MEng dissertation methodology (Sections 3.2–3.11):
+Matches the Project methodology (Sections 3.2–3.11):
 
   Stage 1  ΔP_baseline  = hydrostatic + frictional (homogeneous, no-slip)
   Stage 2  RF predicts residual r = ΔP_measured − ΔP_baseline
